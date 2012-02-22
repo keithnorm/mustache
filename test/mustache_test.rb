@@ -674,4 +674,65 @@ FROM
   DUMMY1
 template
   end
+
+  def test_helper_with_string_arg
+    instance = Mustache.new
+    instance[:truncate] = proc{|text| text[0..11]}
+    instance.template = '{{ truncate "this is some long text" }}'
+
+    assert_equal 'this is some', instance.render   
+  end
+
+  def test_helper_with_mustache_arg
+    instance = Mustache.new
+    instance[:truncate] = proc{|text| text[0..11]}
+    instance[:title] = 'this is some exceedlingly long text'
+    instance.template = '{{ truncate title }}'
+
+    assert_equal 'this is some', instance.render   
+  end
+
+  def test_helper_with_number_as_second_arg
+    instance = Mustache.new
+    instance[:truncate] = proc{|text, length| text[0..length]}
+    instance[:title] = 'this is some exceedlingly long text'
+    instance.template = '{{ truncate title 5 }}'
+
+    assert_equal 'this i', instance.render   
+  end
+
+  def test_helper_with_string_as_second_arg
+    instance = Mustache.new
+    instance[:delimit] = proc{|text1, text2| [text1, text2].join(', ') }
+    instance.template = '{{ delimit "foo" "bar" }}'
+
+    assert_equal 'foo, bar', instance.render   
+  end
+
+  def test_helper_with_many_args 
+    instance = Mustache.new
+    instance[:delimit] = proc{|*args| args.join(', ') }
+    instance.template = '{{ delimit "sup" "dawg" "heard" "you" "like" "args" }}'
+
+    assert_equal 'sup, dawg, heard, you, like, args', instance.render   
+  end
+
+  def test_helper_with_options_hash
+    instance = Mustache.new
+    instance[:truncate] = proc{|text, opts| text[0..opts[:count]] + opts[:ellipsis] }
+    instance.template = '{{ truncate "The Longest Day is The Night Without You" count=15 ellipsis="..." }}'
+
+    assert_equal 'The Longest Day ...', instance.render   
+  end
+
+  def test_helper_with_a_few_normal_args_then_options_hash
+    instance = Mustache.new
+    instance[:format] = proc{|year, month, day, opts| 
+      Time.local(year, month, day).strftime(opts[:format])
+    }
+    instance.template = '{{ format 2008 12 23 format="%B" }}'
+
+    assert_equal 'December', instance.render   
+  end
+      
 end

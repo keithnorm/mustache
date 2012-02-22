@@ -75,14 +75,27 @@ class Mustache
     #      [:static, "Well, $"],
     #      [:mustache, :etag, "taxed_value"],
     #      [:static, ", after taxes.\n"]]]]
+    #
     def compile!(exp)
       case exp.first
       when :multi
         exp[1..-1].map { |e| compile!(e) }.join
       when :static
         str(exp[1])
+      when :number
+        exp[1]
       when :mustache
         send("on_#{exp[1]}", *exp[2..-1])
+      when :hash
+        <<-compiled 
+          {#{ exp[1].map{|pairs|
+              pairs.map{|node|
+                val = compile!(node)
+                node[0] == :static ? val.inspect : val
+              }.join(" => ")
+            }.join(', ') 
+          }}
+        compiled
       else
         raise "Unhandled exp: #{exp.first}"
       end
@@ -143,42 +156,104 @@ class Mustache
       ev("ctx.partial(#{name.to_sym.inspect}, #{indentation.inspect})")
     end
 
-    # An unescaped tag.
-    def on_utag(name)
+# Override to accept args and pass them onto the helper method that will be
+    # called.
+    # 
+    # For example:
+    #
+    #   on_utag([:mustache, :fetch, "foo"])
+    #   => render(foo())
+    #   on_utag([:mustache, :fetch, "foo"], "bar", "baz quux")
+    #   => render(foo("bar, "baz quux"))
+    #
+    # Compare with: https://github.com/defunkt/mustache/blob/master/lib/mustache/generator.rb#L147
+    #
+    def on_utag(name, *args)
       ev(<<-compiled)
         v = #{compile!(name)}
+        args = [#{ args.map{|arg|
+            ret = compile! arg 
+            if arg[0] == :static
+              ret.inspect
+            else
+              ret
+            end
+          }.join(', ') 
+        }]
+
         if v.is_a?(Proc)
-          v = Mustache::Template.new(v.call.to_s).render(ctx.dup)
+          args = args.map{|arg|
+            if arg.is_a?(Proc)
+              arg.call
+            elsif arg.is_a?(Hash)
+              arg.inject({}){|hash, (key, val)|
+                hash.merge(key.to_sym => val.is_a?(Proc) ? val.call : val)
+              }
+            else
+              arg
+            end
+          }
+
+          v = Mustache::Template.new(v.call(*args).to_s).render(ctx.dup)
         end
         v.to_s
       compiled
     end
 
-    # An escaped tag.
-    def on_etag(name)
+    # Override to accept args and pass them onto the helper method that will be
+    # called.
+    # 
+    # For example:
+    #
+    #   on_etag([:mustache, :fetch, "foo"])
+    #   => render(foo())
+    #   on_etag([:mustache, :fetch, "foo"], "bar", "baz quux")
+    #   => render(foo("bar, "baz quux"))
+    #
+    # Compare with: https://github.com/defunkt/mustache/blob/master/lib/mustache/generator.rb#L158
+    #
+    def on_etag(name, *args)
       ev(<<-compiled)
         v = #{compile!(name)}
+        args = [#{ args.map{|arg|
+            ret = compile! arg 
+            if arg[0] == :static
+              ret.inspect
+            else
+              ret
+            end
+          }.join(', ') 
+        }]
+
         if v.is_a?(Proc)
-          v = Mustache::Template.new(v.call.to_s).render(ctx.dup)
+          args = args.map{|arg|
+            if arg.is_a?(Proc)
+              arg.call
+            elsif arg.is_a?(Hash)
+              arg.inject({}){|hash, (key, val)|
+                hash.merge(key.to_sym => val.is_a?(Proc) ? val.call : val)
+              }
+            else
+              arg
+            end
+          }
+
+          v = Mustache::Template.new(v.call(*args).to_s).render(ctx.dup)
         end
         ctx.escapeHTML(v.to_s)
       compiled
     end
-
+    
     def on_fetch(names)
       names = names.map { |n| n.to_sym }
-
+    
       if names.length == 0
         "ctx[:to_s]"
       elsif names.length == 1
         "ctx[#{names.first.to_sym.inspect}]"
       else
         initial, *rest = names
-        <<-compiled
-          #{rest.inspect}.inject(ctx[#{initial.inspect}]) { |value, key|
-            value && ctx.find(value, key)
-          }
-        compiled
+        %Q{ #{rest.inspect}.inject(ctx[#{initial.inspect}]) { |value, key| value && ctx.find(value, key) } }
       end
     end
 
@@ -191,5 +266,10 @@ class Mustache
     def str(s)
       s.inspect[1..-2]
     end
+
+    def hash(h) 
+      h.inspect
+    end
   end
 end
+

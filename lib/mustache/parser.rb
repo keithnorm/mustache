@@ -103,7 +103,23 @@ EOF
       @result
     end
 
-    # Find {{mustaches}} and add them to the @result array.
+    # Override so that after we parse the initial name, we continue by checking for arguments.
+    #
+    # This allows you to not only write:
+    #
+    #   {{foo}}
+    #
+    # but also:
+    #
+    #   {{foo bar}}
+    #   {{foo bar "baz quux"}}
+    #   {{foo 'bar baz'}}
+    #   {{foo 'bar baz', quux, blargh}}
+    #
+    # This also works with the {{{...}}} form.
+    #
+    # Compare with: https://github.com/defunkt/mustache/blob/master/lib/mustache/parser.rb#L107
+    #
     def scan_tags
       # Scan until we hit an opening delimiter.
       start_of_line = @scanner.beginning_of_line?
@@ -174,19 +190,73 @@ EOF
         # The closing } in unescaped tags is just a hack for
         # aesthetics.
         type = "}" if type == "{"
-        @result << [:mustache, :utag, fetch]
+        token_type = :utag
       else
-        @result << [:mustache, :etag, fetch]
+        token_type = :etag
       end
 
-      # Skip whitespace and any balancing sigils after the content
-      # inside this tag.
+      # Skip whitespace after the content inside this tag.
       @scanner.skip(/\s+/)
-      @scanner.skip(regexp(type)) if type
 
-      # Try to find the closing tag.
-      unless close = @scanner.scan(regexp(current_ctag))
-        error "Unclosed tag"
+      if token_type == :utag || token_type == :etag
+        tag = [fetch]
+        i = 0
+        loop do
+          if i > 30
+            # This should never happen, but it's worth checking anyway.
+            error "Unclosed tag"
+          end
+
+          # Skip any balancing sigils after the content inside this tag.
+          @scanner.skip(regexp(type)) if type
+
+          # Try to find the closing tag.
+          re = regexp(current_ctag)
+          if close = @scanner.scan(re)
+            # We're good, go on.
+            # A unary call {{foo}} will be parsed as [:mustache, :etag, "foo"]
+            # A call with args {{foo bar baz}} will be parsed as [:mustache, :etag, "foo", "bar", "baz"]
+            result = ([:mustache, token_type] + tag)
+            @result << result
+            break
+          end
+          # Check for arguments.
+          # Note: option hash style argument 
+          # {{ truncate "some text" length=10 ellipsis="..." }}
+          # have to be last and can not have simple arguments after them
+          if @scanner.scan(/\s*(?:,?\s*)?(?:"([^"]+)"|'([^']+)')\s*/)
+            tag << [:static, (@scanner[2] || @scanner[1])]
+          elsif @scanner.scan(/\s*(?:,?\s*)?(?:([\d\.]+))\s*/)
+            tag << [:number, @scanner[1]]
+          elsif @scanner.scan(/\s*(?:,?\s*)?([^ =#{current_ctag}]+)[\s #{current_ctag}]/)
+            tag << [:mustache, :fetch, @scanner[1].split('.')]
+          elsif @scanner.scan(/\s*(?:,?\s*)?([^ }]+=[^}]+)/)
+            args = @scanner[1].split(' ')
+            hash = [:hash, []]
+            args.each do |arg|
+              key, val = arg.split('=')
+              if(is_static?(val)) 
+                hash[1] << [[:static, key], [:static, val[1..-2]]]
+              elsif(is_number?(val))
+                hash[1] << [[:static, key], [:number, val]]
+              elsif(is_stache?(val))
+                hash[1] << [[:static, key], [:mustache, :fetch, val]]
+              end
+            end
+            tag << hash
+          else
+            error "Unclosed tag"
+          end
+          i += 1
+        end
+      else
+        # Skip any balancing sigils after the content inside this tag.
+        @scanner.skip(regexp(type)) if type
+        # Try to find the closing tag.
+        re = regexp(current_ctag)
+        unless close = @scanner.scan(re)
+          error "Unclosed tag"
+        end
       end
 
       # If this tag was the only non-whitespace content on this line, strip
@@ -253,6 +323,19 @@ EOF
       /#{Regexp.escape(thing)}/
     end
 
+    def is_static?(val) 
+      val.match(/^\"/)
+    end
+
+    def is_number?(val)
+      val.match(/[\d\.]$/)
+    end
+
+    def is_stache?(val)
+      !is_static?(val) && !is_number?(val)
+    end
+    
+
     # Raises a SyntaxError. The message should be the name of the
     # error - other details such as line number and position are
     # handled for you.
@@ -261,3 +344,4 @@ EOF
     end
   end
 end
+
